@@ -5,8 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 
-print("--- EXPERIMENT 1: BREAST CANCER (L2 Wasserstein DRO) ---")
-# 1. Data Setup (Labels must be -1 or 1 for SVM Hinge Loss)
+print("--- EXPERIMENT 2: BREAST CANCER (SVM Classification) ---")
 data = load_breast_cancer()
 X = data.data
 y = np.where(data.target == 0, -1, 1) 
@@ -18,29 +17,39 @@ X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 n_samples, n_features = X_train.shape
 
-# 2. Global Corruption (Degraded sensors affect ALL features slightly)
+noisy_indices = [0, 1, 2, 3, 4]
 np.random.seed(42)
-X_test_corrupted = X_test + np.random.normal(0, 1.5, size=X_test.shape)
+X_test_corrupted = X_test.copy()
+X_test_corrupted[:, noisy_indices] += np.random.normal(0, 2.0, size=(X_test.shape[0], len(noisy_indices)))
 
-# 3. Base ERM Model (Standard Linear SVM)
+# 1. Base ERM
 beta_erm = cp.Variable(n_features)
-# Hinge loss for classification
 loss_erm = (1/n_samples) * cp.sum(cp.pos(1 - cp.multiply(y_train, X_train @ beta_erm)))
 cp.Problem(cp.Minimize(loss_erm)).solve()
 
-# 4. Standard L2 Wasserstein DRO (Dual is L2 Ridge Penalty)
-beta_dro = cp.Variable(n_features)
-loss_dro = (1/n_samples) * cp.sum(cp.pos(1 - cp.multiply(y_train, X_train @ beta_dro)))
+# 2. Standard W-DRO
+beta_std_dro = cp.Variable(n_features)
+loss_std = (1/n_samples) * cp.sum(cp.pos(1 - cp.multiply(y_train, X_train @ beta_std_dro)))
+lambda_radius = 0.5
+std_penalty = lambda_radius * cp.max(cp.abs(beta_std_dro)) 
+cp.Problem(cp.Minimize(loss_std + std_penalty)).solve()
 
-lambda_radius = 0.5 # Ambiguity set radius
-# L2 Norm Penalty (Unweighted)
-dro_penalty = lambda_radius * cp.norm(beta_dro, 2) 
-cp.Problem(cp.Minimize(loss_dro + dro_penalty)).solve()
+# 3. Feature-Weighted W-DRO
+beta_w_dro = cp.Variable(n_features)
+loss_w = (1/n_samples) * cp.sum(cp.pos(1 - cp.multiply(y_train, X_train @ beta_w_dro)))
+weights = np.ones(n_features)
+weights[noisy_indices] = 0.1
+w_penalty = lambda_radius * cp.max(cp.abs(beta_w_dro) / weights) 
+cp.Problem(cp.Minimize(loss_w + w_penalty)).solve()
 
-# 5. Evaluation
 def predict(X, beta): return np.sign(X @ beta.value)
 
-print(f"ERM Accuracy (Clean):     {accuracy_score(y_test, predict(X_test, beta_erm)):.4f}")
-print(f"ERM Accuracy (Corrupted): {accuracy_score(y_test, predict(X_test_corrupted, beta_erm)):.4f}")
-print(f"DRO Accuracy (Clean):     {accuracy_score(y_test, predict(X_test, beta_dro)):.4f}")
-print(f"DRO Accuracy (Corrupted): {accuracy_score(y_test, predict(X_test_corrupted, beta_dro)):.4f}\n")
+print("--- CLEAN DATA ---")
+print(f"ERM Accuracy:           {accuracy_score(y_test, predict(X_test, beta_erm)):.4f}")
+print(f"Standard DRO Accuracy:  {accuracy_score(y_test, predict(X_test, beta_std_dro)):.4f}")
+print(f"Weighted DRO Accuracy:  {accuracy_score(y_test, predict(X_test, beta_w_dro)):.4f}")
+
+print("\n--- CORRUPTED DATA ---")
+print(f"ERM Accuracy:           {accuracy_score(y_test, predict(X_test_corrupted, beta_erm)):.4f}")
+print(f"Standard DRO Accuracy:  {accuracy_score(y_test, predict(X_test_corrupted, beta_std_dro)):.4f}")
+print(f"Weighted DRO Accuracy:  {accuracy_score(y_test, predict(X_test_corrupted, beta_w_dro)):.4f}\n")
